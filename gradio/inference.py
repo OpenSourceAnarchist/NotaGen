@@ -274,14 +274,14 @@ def inference_patch(period, composer, instrumentation):
                     if '\n' not in context_tunebody:
                         break   # Generated content is all metadata, abandon
 
-                    context_tunebody_liness = context_tunebody.split('\n')
+                    context_tunebody_lines = context_tunebody.split('\n')
                     if not context_tunebody.endswith('\n'):
-                        context_tunebody_liness = [context_tunebody_liness[i] + '\n' for i in range(len(context_tunebody_liness) - 1)] + [context_tunebody_liness[-1]]
+                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines) - 1)] + [context_tunebody_lines[-1]]
                     else:
-                        context_tunebody_liness = [context_tunebody_liness[i] + '\n' for i in range(len(context_tunebody_liness))]
+                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines))]
 
-                    cut_index = len(context_tunebody_liness) // 2
-                    abc_code_slice = metadata + ''.join(context_tunebody_liness[-cut_index:])
+                    cut_index = len(context_tunebody_lines) // 2
+                    abc_code_slice = metadata + ''.join(context_tunebody_lines[-cut_index:])
 
                     input_patches = patchilizer.encode_generate(abc_code_slice)
 

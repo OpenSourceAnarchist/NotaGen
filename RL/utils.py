@@ -312,16 +312,39 @@ class CharLevelDecoder(PreTrainedModel):
         return probs
 
 def safe_normalize_probs(probs):
-    epsilon = 1e-12
+    # Ensure probs is a numpy array of float64 for precision
     probs = np.array(probs, dtype=np.float64)
+
+    # Set NaN and negative probabilities to 0.
     probs = np.where(np.isnan(probs) | (probs < 0), 0, probs)
-    probs = probs + epsilon
+
     s = probs.sum()
-    if s > 0:
-        probs = probs / s
-    else:
-        probs = np.zeros_like(probs)
-        probs[0] = 1.0
+
+    # Fall back to a uniform distribution to avoid crashing np.random.choice
+    # and to prevent always picking the first token.
+    if s <= 1e-9:  # Using a small threshold
+        num_tokens = len(probs)
+        if num_tokens > 0:
+            return np.full(num_tokens, 1.0 / num_tokens, dtype=np.float64)
+        else:
+            # Should ideally not happen with valid input probs array
+            return np.array([], dtype=np.float64)
+            
+    # Normalize the probabilities
+    probs = probs / s
+
+    # Due to floating point arithmetic, the sum might not be *exactly* 1.0.
+    final_sum = probs.sum()
+    if not np.isclose(final_sum, 1.0):
+        if final_sum > 1e-9: # Avoid division by zero
+            probs = probs / final_sum
+        else: # If sum is still zero, fall back to uniform.
+            num_tokens = len(probs)
+            if num_tokens > 0:
+                return np.full(num_tokens, 1.0 / num_tokens, dtype=np.float64)
+            else:
+                return np.array([], dtype=np.float64)
+
     return probs
 
 class NotaGenLMHeadModel(PreTrainedModel):
@@ -388,9 +411,7 @@ class NotaGenLMHeadModel(PreTrainedModel):
             prob = self.char_level_decoder.generate(encoded_patches[0][-1], tokens).cpu().detach().numpy()  # [128]
             prob = safe_normalize_probs(prob)
             prob = top_k_sampling(prob, top_k=top_k, return_probs=True) # [128]
-            prob = safe_normalize_probs(prob)
             prob = top_p_sampling(prob, top_p=top_p, return_probs=True) # [128]
-            prob = safe_normalize_probs(prob)
             token = temperature_sampling(prob, temperature=temperature) # int
             char = chr(token)
             generated_patch.append(token)

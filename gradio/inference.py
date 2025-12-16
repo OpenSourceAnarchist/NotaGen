@@ -7,22 +7,20 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error on
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '3'
-# Suppress JAX/XLA warnings
-os.environ['JAX_PLATFORMS'] = ''  # Disable JAX platform detection noise
-os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='  # Suppress XLA CUDA warnings
+os.environ['JAX_PLATFORMS'] = ''
+os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
+# Additional C++ log suppression
+os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_DEPRECATION_WARNINGS'] = '0'
 
 import sys
 import time
+import re
 import warnings
+from typing import Optional, List, Generator, Callable, Any
 
-# Suppress Python-level warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='torchao')
-warnings.filterwarnings('ignore', category=UserWarning, module='transformers')
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', message='.*computation placer.*')
-warnings.filterwarnings('ignore', message='.*cuFFT.*')
-warnings.filterwarnings('ignore', message='.*cuDNN.*')
-warnings.filterwarnings('ignore', message='.*cuBLAS.*')
+# Suppress Python-level warnings aggressively
+warnings.filterwarnings('ignore')
 
 import torch
 
@@ -33,7 +31,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from utils import *
-from config import INFERENCE_WEIGHTS_PATH, PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS, HIDDEN_SIZE
+from config import INFERENCE_WEIGHTS_PATH, PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS, HIDDEN_SIZE, TOP_K, TOP_P, TEMPERATURE
 from transformers import GPT2Config
 from abctoolkit.utils import Barline_regexPattern
 from abctoolkit.transpose import Note_list
@@ -41,7 +39,25 @@ from abctoolkit.duration import calculate_bartext_duration
 
 Note_list = Note_list + ['z', 'x']
 
-# Device selection with clear logging
+# =============================================================================
+# End-of-Piece Detection Patterns
+# =============================================================================
+
+# Patterns that indicate end of a piece
+END_PATTERNS = [
+    r'%end\s*$',           # Explicit end marker
+    r'\|]\s*$',            # Final bar line
+    r':?\|\]\s*$',         # Repeat + final bar
+    r'\|\|\s*$',           # Double bar line at end
+]
+
+# Pattern for detecting start of a new piece (after first one)
+NEW_PIECE_PATTERN = re.compile(r'^%[A-Z][a-z]+\s*$')  # %Classical, %Romantic, etc.
+
+# =============================================================================
+# Device Selection
+# =============================================================================
+
 if torch.cuda.is_available():
     device = torch.device("cuda")
     print(f"🚀 Using CUDA: {torch.cuda.get_device_name(0)}")
@@ -51,6 +67,10 @@ elif torch.backends.mps.is_available():
 else:
     device = torch.device("cpu")
     print("💻 Using CPU (GPU not available)")
+
+# =============================================================================
+# Model Setup
+# =============================================================================
 
 patchilizer = Patchilizer()
 
@@ -71,32 +91,17 @@ model = NotaGenLMHeadModel(encoder_config=patch_config, decoder_config=byte_conf
 
 
 def prepare_model_for_kbit_training(model, use_gradient_checkpointing=True):
-    """
-    Prepare model for k-bit training.
-    Features include:
-    1. Convert model to mixed precision (FP16).
-    2. Disable unnecessary gradient computations.
-    3. Enable gradient checkpointing (optional).
-    """
-    # Convert model to mixed precision
+    """Prepare model for inference with mixed precision."""
     model = model.to(dtype=torch.float16)
-
-    # Disable gradients for embedding layers
     for param in model.parameters():
         if param.dtype == torch.float32:
             param.requires_grad = False
-
-    # Enable gradient checkpointing
     if use_gradient_checkpointing:
         model.gradient_checkpointing_enable()
-
     return model
 
 
-model = prepare_model_for_kbit_training(
-    model,
-    use_gradient_checkpointing=False  
-)
+model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
 
 print(f"📊 Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -237,7 +242,116 @@ def rest_unreduce(abc_lines):
     return unreduced_lines
 
 
-def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, temperature=None):
+# =============================================================================
+# End-of-Piece Detection
+# =============================================================================
+
+def check_piece_complete(text: str, pieces_found: int = 0) -> tuple[bool, int]:
+    """
+    Check if the generated text contains a complete piece or multiple pieces.
+    
+    Returns:
+        (is_complete, piece_count): Whether a piece is complete and how many pieces found
+    """
+    lines = text.strip().split('\n')
+    
+    # Count piece markers (period headers like %Classical, %Romantic, etc.)
+    piece_starts = 0
+    for line in lines:
+        if line.startswith('%') and not line.startswith('%%'):
+            # Check if it's a period marker (first word after % is capitalized)
+            content = line[1:].strip()
+            if content and content[0].isupper() and ' ' not in content:
+                # Could be period, composer line, or instrumentation
+                # Period markers are typically single words like Classical, Baroque, Romantic
+                if content in ['Classical', 'Baroque', 'Romantic', 'Renaissance', 'Modern', '20th Century', 'Medieval']:
+                    piece_starts += 1
+    
+    # Check for end markers
+    has_end_marker = False
+    for pattern in END_PATTERNS:
+        if re.search(pattern, text, re.MULTILINE):
+            has_end_marker = True
+            break
+    
+    # Check for %end marker explicitly
+    if '%end' in text.lower():
+        has_end_marker = True
+    
+    # A piece is complete if we have an end marker and we're past the initial prompt
+    # Count based on how many times we see the typical structure
+    return has_end_marker, max(1, piece_starts)
+
+
+def should_stop_generation(text: str, max_pieces: int = 1) -> bool:
+    """
+    Determine if generation should stop based on content.
+    
+    Args:
+        text: Generated text so far
+        max_pieces: Maximum number of pieces to generate
+        
+    Returns:
+        True if generation should stop
+    """
+    is_complete, piece_count = check_piece_complete(text)
+    
+    # Stop if we've completed the desired number of pieces
+    if is_complete and piece_count >= max_pieces:
+        return True
+    
+    # Stop if we see a new piece starting after completing one
+    if piece_count > max_pieces:
+        return True
+    
+    return False
+
+
+def truncate_to_complete_piece(text: str) -> str:
+    """
+    Truncate text to end at the last complete piece.
+    Removes any partial content after the last end marker.
+    """
+    # Find the last occurrence of common end markers
+    last_end = -1
+    
+    # Look for final barlines
+    for match in re.finditer(r'\|]\s*\n', text):
+        last_end = match.end()
+    
+    # Look for %end marker
+    end_match = re.search(r'%end\s*\n?', text, re.IGNORECASE)
+    if end_match and end_match.end() > last_end:
+        last_end = end_match.end()
+    
+    if last_end > 0:
+        return text[:last_end].strip() + '\n'
+    
+    return text
+
+
+# =============================================================================
+# Main Inference Function (Enhanced)
+# =============================================================================
+
+def inference_patch(
+    period: str = None,
+    composer: str = None,
+    instrumentation: str = None,
+    top_k: int = None,
+    top_p: float = None,
+    temperature: float = None,
+    # Custom prompt support
+    custom_prompt: str = None,
+    additional_preamble: str = None,
+    # Termination settings
+    max_pieces: int = 1,
+    max_time: int = 600,
+    max_bytes: int = 102400,
+    stop_on_complete: bool = True,
+    # Callbacks
+    on_token: Callable[[str], None] = None,
+) -> Optional[str]:
     """
     Generate music notation using the NotaGen model.
     
@@ -248,9 +362,16 @@ def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, t
         top_k: Top-k sampling parameter (default: from config)
         top_p: Top-p (nucleus) sampling parameter (default: from config)
         temperature: Sampling temperature (default: from config)
+        custom_prompt: Custom prompt lines (overrides period/composer/instrumentation)
+        additional_preamble: Additional ABC notation to append after prompt
+        max_pieces: Maximum number of pieces to generate (default: 1)
+        max_time: Maximum generation time in seconds (default: 600)
+        max_bytes: Maximum bytes to generate (default: 102400)
+        stop_on_complete: Stop when a complete piece is detected (default: True)
+        on_token: Callback function called for each generated token
     
     Returns:
-        Generated ABC notation string
+        Generated ABC notation string, or None if generation failed
     """
     # Use config defaults if not specified
     if top_k is None:
@@ -260,10 +381,35 @@ def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, t
     if temperature is None:
         temperature = TEMPERATURE
 
-    prompt_lines=[
-    '%' + period + '\n',
-    '%' + composer + '\n',
-    '%' + instrumentation + '\n']
+    # Build prompt lines
+    if custom_prompt and custom_prompt.strip():
+        # Use custom prompt directly
+        prompt_lines = []
+        for line in custom_prompt.strip().split('\n'):
+            if not line.endswith('\n'):
+                line += '\n'
+            prompt_lines.append(line)
+    else:
+        # Use standard prompt format
+        prompt_lines = []
+        if period:
+            prompt_lines.append('%' + period + '\n')
+        if composer:
+            prompt_lines.append('%' + composer + '\n')
+        if instrumentation:
+            prompt_lines.append('%' + instrumentation + '\n')
+    
+    # Add additional preamble if specified
+    if additional_preamble and additional_preamble.strip():
+        for line in additional_preamble.strip().split('\n'):
+            if not line.endswith('\n'):
+                line += '\n'
+            prompt_lines.append(line)
+
+    # Termination tracking
+    pieces_generated = 0
+    generation_start_time = time.time()
+    total_bytes = 0
 
     while True:
 
@@ -319,7 +465,10 @@ def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, t
                         context_tunebody_byte_list.append(char)
                     else:
                         metadata_byte_list.append(char)
-                    print(char, end='')
+                    print(char, end='', flush=True)
+                    # Callback for token progress
+                    if on_token:
+                        on_token(char)
 
                 patch_end_flag = False
                 for j in range(len(predicted_patch)):
@@ -331,11 +480,25 @@ def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, t
                 predicted_patch = torch.tensor([predicted_patch], device=device)  # (1, 16)
                 input_patches = torch.cat([input_patches, predicted_patch], dim=1)  # (1, 16 * patch_len)
 
-                if len(byte_list) > 102400:
+                # Check termination conditions
+                current_text = ''.join(byte_list)
+                total_bytes = len(byte_list)
+                elapsed_time = time.time() - generation_start_time
+                
+                # User-configurable limits
+                if total_bytes > max_bytes:
+                    print(f'\n[Stopped: max bytes {max_bytes} reached]')
                     failure_flag = True
                     break
-                if time.time() - start_time > 10 * 60: 
+                if elapsed_time > max_time:
+                    print(f'\n[Stopped: max time {max_time}s reached]')
                     failure_flag = True
+                    break
+                
+                # Smart termination: stop when piece is complete
+                if stop_on_complete and should_stop_generation(current_text, max_pieces):
+                    print('\n[Piece complete - stopping generation]')
+                    end_flag = True
                     break
 
                 if input_patches.shape[1] >= PATCH_LENGTH * PATCH_SIZE and not end_flag:
@@ -380,11 +543,85 @@ def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, t
                     unreduced_abc_lines = [line for line in unreduced_abc_lines if not(line.startswith('%') and not line.startswith('%%'))]
                     unreduced_abc_lines = ['X:1\n'] + unreduced_abc_lines
                     unreduced_abc_text = ''.join(unreduced_abc_lines)
+                    
+                    # Truncate to complete piece if needed
+                    if stop_on_complete:
+                        unreduced_abc_text = truncate_to_complete_piece(unreduced_abc_text)
+                    
                     return unreduced_abc_text
+    
+    # If we exit the outer loop without returning, return None
+    return None
 
 
+def inference_batch(
+    period: str = None,
+    composer: str = None,
+    instrumentation: str = None,
+    num_variations: int = 3,
+    top_k: int = None,
+    top_p: float = None,
+    temperature: float = None,
+    custom_prompt: str = None,
+    additional_preamble: str = None,
+    max_time_per_piece: int = 300,
+    stop_on_complete: bool = True,
+    on_progress: Callable[[int, int, str], None] = None,
+) -> List[str]:
+    """
+    Generate multiple variations using the NotaGen model.
+    
+    Args:
+        period: Musical period
+        composer: Composer name  
+        instrumentation: Instrument description
+        num_variations: Number of variations to generate
+        top_k: Top-k sampling parameter
+        top_p: Top-p (nucleus) sampling parameter
+        temperature: Sampling temperature
+        custom_prompt: Custom prompt (overrides period/composer/instrumentation)
+        additional_preamble: Additional ABC notation to append
+        max_time_per_piece: Maximum time per piece in seconds
+        stop_on_complete: Stop when piece is complete
+        on_progress: Callback(current, total, status) for progress updates
         
-
+    Returns:
+        List of generated ABC notation strings
+    """
+    results = []
+    
+    for i in range(num_variations):
+        if on_progress:
+            on_progress(i + 1, num_variations, f"Generating variation {i + 1}/{num_variations}...")
+        
+        try:
+            result = inference_patch(
+                period=period,
+                composer=composer,
+                instrumentation=instrumentation,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                custom_prompt=custom_prompt,
+                additional_preamble=additional_preamble,
+                max_time=max_time_per_piece,
+                stop_on_complete=stop_on_complete,
+            )
+            
+            if result:
+                results.append(result)
+                if on_progress:
+                    on_progress(i + 1, num_variations, f"✓ Variation {i + 1} complete")
+            else:
+                if on_progress:
+                    on_progress(i + 1, num_variations, f"✗ Variation {i + 1} failed")
+                    
+        except Exception as e:
+            print(f"Error generating variation {i + 1}: {e}")
+            if on_progress:
+                on_progress(i + 1, num_variations, f"✗ Error: {str(e)[:50]}")
+    
+    return results
 
 
 if __name__ == '__main__':

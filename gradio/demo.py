@@ -8,10 +8,13 @@ os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '3'
 os.environ['JAX_PLATFORMS'] = ''
 os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
+os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_DEPRECATION_WARNINGS'] = '0'
 
 import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore')
 
 import gradio as gr
 import sys
@@ -37,10 +40,14 @@ if PROJECT_ROOT not in sys.path:
 os.chdir(SCRIPT_DIR)
 
 # Now import after path is set up
-from inference import inference_patch
+from inference import inference_patch, inference_batch
+from generation_config import (
+    SAMPLING_PRESETS, TEMPO_PRESETS, KEY_SIGNATURES, 
+    TIME_SIGNATURES, STYLE_PRESETS as COMPOSITION_STYLES, UNIT_LENGTHS
+)
 
 # =============================================================================
-# Style Presets
+# Style Presets (Sampling)
 # =============================================================================
 
 STYLE_PRESETS = {
@@ -50,6 +57,25 @@ STYLE_PRESETS = {
     "Very Conservative": {"top_k": 3, "top_p": 0.7, "temperature": 0.7},
     "Experimental": {"top_k": 20, "top_p": 0.98, "temperature": 1.8},
 }
+
+# =============================================================================
+# Composition Presets for Custom Prompts
+# =============================================================================
+
+# Tempo options for dropdown
+TEMPO_OPTIONS = ["(Auto)"] + list(TEMPO_PRESETS.keys())
+
+# Key signature options
+KEY_OPTIONS = ["(Auto)"] + KEY_SIGNATURES
+
+# Time signature options  
+TIME_SIG_OPTIONS = ["(Auto)"] + TIME_SIGNATURES
+
+# Musical style/expression options
+EXPRESSION_OPTIONS = ["(None)"] + list(COMPOSITION_STYLES.keys())
+
+# Unit note length options
+UNIT_LENGTH_OPTIONS = ["(Auto)"] + list(UNIT_LENGTHS.keys())
 
 # =============================================================================
 # Load Valid Prompts
@@ -81,6 +107,48 @@ def update_preset(preset_name):
         preset = STYLE_PRESETS[preset_name]
         return preset["top_k"], preset["top_p"], preset["temperature"]
     return 9, 0.9, 1.2  # Default values
+
+
+def build_custom_preamble(tempo, key, time_sig, expression, unit_length):
+    """Build ABC notation preamble from composition settings."""
+    lines = []
+    
+    # Add tempo marking
+    if tempo and tempo != "(Auto)":
+        tempo_info = TEMPO_PRESETS.get(tempo)
+        if tempo_info and isinstance(tempo_info, dict):
+            bpm_range = tempo_info.get("bpm_range", (100, 120))
+            bpm = (bpm_range[0] + bpm_range[1]) // 2
+            lines.append(f'Q:1/4={bpm}')
+        elif tempo_info and isinstance(tempo_info, tuple):
+            bpm = (tempo_info[0] + tempo_info[1]) // 2
+            lines.append(f'Q:1/4={bpm}')
+    
+    # Add key signature
+    if key and key != "(Auto)":
+        key_value = KEY_SIGNATURES.get(key, key)
+        if key_value:
+            lines.append(f'K:{key_value}')
+    
+    # Add time signature
+    if time_sig and time_sig != "(Auto)":
+        time_value = TIME_SIGNATURES.get(time_sig, time_sig)
+        if time_value:
+            lines.append(f'M:{time_value}')
+    
+    # Add unit note length
+    if unit_length and unit_length != "(Auto)":
+        unit = UNIT_LENGTHS.get(unit_length, unit_length)
+        if unit:
+            lines.append(f'L:{unit}')
+    
+    # Add expression/style as a text annotation
+    if expression and expression != "(None)":
+        style_value = COMPOSITION_STYLES.get(expression, expression)
+        if style_value:
+            lines.append(f'%%text {style_value}')
+    
+    return '\n'.join(lines) if lines else None
 
 # Dynamic component updates
 def update_components(period, composer):
@@ -146,25 +214,68 @@ def save_and_convert(abc_content, period, composer, instrumentation):
 
 
 
-def generate_music_ui(period, composer, instrumentation, top_k, top_p, temperature):
-    """Generate music with custom sampling parameters."""
-    if (period, composer, instrumentation) not in valid_combinations:
-        raise gr.Error("Invalid prompt combination! Please re-select from the period options")
+def generate_music_ui(period, composer, instrumentation, top_k, top_p, temperature,
+                       num_variations, use_custom_prompt, custom_prompt_text,
+                       tempo, key_sig, time_sig, expression, unit_length, stop_on_complete):
+    """Generate music with custom sampling parameters and optional custom prompt."""
+    
+    # Determine if using custom prompt or standard
+    if use_custom_prompt and custom_prompt_text and custom_prompt_text.strip():
+        # Custom prompt mode - bypass validation
+        effective_prompt = custom_prompt_text.strip()
+        period_for_file = "Custom"
+        composer_for_file = "Custom"
+        instrumentation_for_file = "Custom"
+    else:
+        # Standard mode - validate combination
+        if (period, composer, instrumentation) not in valid_combinations:
+            raise gr.Error("Invalid prompt combination! Please re-select from the period options")
+        effective_prompt = None
+        period_for_file = period
+        composer_for_file = composer
+        instrumentation_for_file = instrumentation
+    
+    # Build composition preamble
+    composition_preamble = build_custom_preamble(tempo, key_sig, time_sig, expression, unit_length)
     
     output_queue = queue.Queue()
     original_stdout = sys.stdout
     sys.stdout = RealtimeStream(output_queue)
     
     result_container = []
+    
     def run_inference():
         try:
-            # Pass sampling parameters to inference
-            result_container.append(
-                inference_patch(
-                    period, composer, instrumentation,
-                    top_k=int(top_k), top_p=float(top_p), temperature=float(temperature)
+            if num_variations > 1:
+                # Batch generation
+                results = inference_batch(
+                    period=period if not use_custom_prompt else None,
+                    composer=composer if not use_custom_prompt else None,
+                    instrumentation=instrumentation if not use_custom_prompt else None,
+                    num_variations=int(num_variations),
+                    top_k=int(top_k),
+                    top_p=float(top_p),
+                    temperature=float(temperature),
+                    custom_prompt=effective_prompt,
+                    additional_preamble=composition_preamble,
+                    stop_on_complete=stop_on_complete,
                 )
-            )
+                result_container.extend(results)
+            else:
+                # Single generation
+                result = inference_patch(
+                    period=period if not use_custom_prompt else None,
+                    composer=composer if not use_custom_prompt else None,
+                    instrumentation=instrumentation if not use_custom_prompt else None,
+                    top_k=int(top_k),
+                    top_p=float(top_p),
+                    temperature=float(temperature),
+                    custom_prompt=effective_prompt,
+                    additional_preamble=composition_preamble,
+                    stop_on_complete=stop_on_complete,
+                )
+                if result:
+                    result_container.append(result)
         finally:
             sys.stdout = original_stdout
     
@@ -185,7 +296,17 @@ def generate_music_ui(period, composer, instrumentation, top_k, top_p, temperatu
         process_output += text
         yield process_output, None
     
-    final_result = result_container[0] if result_container else ""
+    # Format results
+    if len(result_container) == 0:
+        final_result = "Generation failed. Please try again."
+    elif len(result_container) == 1:
+        final_result = result_container[0]
+    else:
+        # Multiple variations - separate with headers
+        final_result = ""
+        for i, abc in enumerate(result_container, 1):
+            final_result += f"% ===== Variation {i} =====\n{abc}\n\n"
+    
     yield process_output, final_result
 
 
@@ -232,7 +353,7 @@ with gr.Blocks(title="NotaGen - Music Generation") as demo:
                 info="Quick presets for different generation styles"
             )
             
-            with gr.Accordion("Advanced Settings", open=False):
+            with gr.Accordion("Sampling Settings", open=False):
                 top_k_slider = gr.Slider(
                     minimum=1,
                     maximum=50,
@@ -256,6 +377,70 @@ with gr.Blocks(title="NotaGen - Music Generation") as demo:
                     step=0.1,
                     label="Temperature",
                     info="Higher = more random/creative (0.1-2.0)"
+                )
+            
+            with gr.Accordion("🎯 Batch & Termination", open=False):
+                num_variations_slider = gr.Slider(
+                    minimum=1,
+                    maximum=100,
+                    value=1,
+                    step=1,
+                    label="Number of Variations",
+                    info="Generate multiple variations (1-100)"
+                )
+                stop_on_complete_checkbox = gr.Checkbox(
+                    value=True,
+                    label="Stop when piece is complete",
+                    info="Auto-stop at final barline (|] or ||)"
+                )
+            
+            with gr.Accordion("🎹 Composition Controls", open=False):
+                gr.Markdown("*Optionally set musical attributes. These hints help guide generation.*")
+                with gr.Row():
+                    tempo_dd = gr.Dropdown(
+                        choices=TEMPO_OPTIONS,
+                        value="(Auto)",
+                        label="Tempo",
+                        info="Set tempo marking"
+                    )
+                    key_dd = gr.Dropdown(
+                        choices=KEY_OPTIONS,
+                        value="(Auto)",
+                        label="Key Signature",
+                        info="Set key signature"
+                    )
+                with gr.Row():
+                    time_sig_dd = gr.Dropdown(
+                        choices=TIME_SIG_OPTIONS,
+                        value="(Auto)",
+                        label="Time Signature",
+                        info="Set time signature"
+                    )
+                    unit_length_dd = gr.Dropdown(
+                        choices=UNIT_LENGTH_OPTIONS,
+                        value="(Auto)",
+                        label="Note Unit",
+                        info="Default note length"
+                    )
+                expression_dd = gr.Dropdown(
+                    choices=EXPRESSION_OPTIONS,
+                    value="(None)",
+                    label="Expression/Style",
+                    info="Musical character"
+                )
+            
+            with gr.Accordion("✏️ Custom Prompt", open=False):
+                gr.Markdown("*Override the dropdowns with your own prompt. Use ABC notation format.*")
+                use_custom_prompt_checkbox = gr.Checkbox(
+                    value=False,
+                    label="Use Custom Prompt",
+                    info="Enable to use custom text instead of dropdowns"
+                )
+                custom_prompt_textbox = gr.Textbox(
+                    label="Custom Prompt Lines",
+                    placeholder="%Classical\n%Mozart, Wolfgang Amadeus\n%Keyboard\nM:4/4\nK:C",
+                    lines=5,
+                    info="Enter prompt lines (one per line). Include % for metadata."
                 )
             
             generate_btn = gr.Button("🎹 Generate Music!", variant="primary", size="lg")
@@ -313,7 +498,13 @@ with gr.Blocks(title="NotaGen - Music Generation") as demo:
     # Generate with all parameters
     generate_btn.click(
         generate_music_ui,
-        inputs=[period_dd, composer_dd, instrument_dd, top_k_slider, top_p_slider, temperature_slider],
+        inputs=[
+            period_dd, composer_dd, instrument_dd, 
+            top_k_slider, top_p_slider, temperature_slider,
+            num_variations_slider, use_custom_prompt_checkbox, custom_prompt_textbox,
+            tempo_dd, key_dd, time_sig_dd, expression_dd, unit_length_dd,
+            stop_on_complete_checkbox
+        ],
         outputs=[process_output, final_output]
     )
     

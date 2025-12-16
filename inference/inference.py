@@ -8,13 +8,17 @@ os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '3'
 os.environ['JAX_PLATFORMS'] = ''
 os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
+os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_DEPRECATION_WARNINGS'] = '0'
 
 import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore')
 
 import sys
 import time
+import re
 import torch
 from utils import *
 from config import *
@@ -29,6 +33,37 @@ from abctoolkit.transpose import Note_list
 from abctoolkit.duration import calculate_bartext_duration
 
 Note_list = Note_list + ['z', 'x']
+
+# =============================================================================
+# End-of-Piece Detection Patterns
+# =============================================================================
+
+END_PATTERNS = [
+    r'\|]\s*$',            # Final bar line
+    r':?\|\]\s*$',         # Repeat + final bar
+    r'\|\|\s*$',           # Double bar line at end
+]
+
+
+def check_piece_complete(text: str) -> bool:
+    """Check if the generated text contains a complete piece."""
+    for pattern in END_PATTERNS:
+        if re.search(pattern, text, re.MULTILINE):
+            return True
+    return False
+
+
+def truncate_to_complete_piece(text: str) -> str:
+    """Truncate text to end at the last complete piece."""
+    last_end = -1
+    
+    for match in re.finditer(r'\|]\s*\n', text):
+        last_end = match.end()
+    
+    if last_end > 0:
+        return text[:last_end].strip() + '\n'
+    
+    return text
 
 # Use centralized device detection with CUDA/MPS/CPU support
 device = get_device(verbose=True)
@@ -151,8 +186,17 @@ def rest_unreduce(abc_lines):
     return unreduced_lines
 
 
-def inference_patch(prompt_lines=[], pieces=NUM_SAMPLES):
-
+def inference_patch(prompt_lines=[], pieces=NUM_SAMPLES, stop_on_complete=True, max_bytes=102400, max_time=1200):
+    """
+    Generate music patches with optional termination detection.
+    
+    Args:
+        prompt_lines: List of prompt lines for generation
+        pieces: Number of pieces to generate
+        stop_on_complete: Stop when a complete piece is detected
+        max_bytes: Maximum bytes to generate per piece
+        max_time: Maximum time in seconds per piece
+    """
     file_no = 1
 
     bos_patch = [patchilizer.bos_token_id] * (PATCH_SIZE - 1) + [patchilizer.eos_token_id]
@@ -210,12 +254,22 @@ def inference_patch(prompt_lines=[], pieces=NUM_SAMPLES):
             predicted_patch = torch.tensor([predicted_patch], device=device)  # (1, 16)
             input_patches = torch.cat([input_patches, predicted_patch], dim=1)  # (1, 16 * patch_len)
 
-            if len(byte_list) > 102400:  
+            if len(byte_list) > max_bytes:  
+                print(f'\n[Stopped: max bytes {max_bytes} reached]')
                 failure_flag = True
                 break
-            if time.time() - start_time > 20 * 60:  
+            if time.time() - start_time > max_time:  
+                print(f'\n[Stopped: max time {max_time}s reached]')
                 failure_flag = True
                 break
+            
+            # Smart termination: stop when piece is complete
+            if stop_on_complete:
+                current_text = ''.join(byte_list)
+                if check_piece_complete(current_text):
+                    print('\n[Piece complete - stopping generation]')
+                    end_flag = True
+                    break
 
             if input_patches.shape[1] >= PATCH_LENGTH * PATCH_SIZE and not end_flag:
                 print('Stream generating...')

@@ -227,7 +227,15 @@ def load_notagen(
     
     # Create model
     model = NotaGenLMHeadModel(encoder_config, decoder_config, patch_size=patch_size)
-    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
+    
+    # Load checkpoint - use weights_only=False since our checkpoints may contain
+    # optimizer state and other complex objects (PyTorch 2.6+ compatibility)
+    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+    # Handle both direct state_dict and wrapped checkpoint formats
+    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+        model.load_state_dict(checkpoint['model'])
+    else:
+        model.load_state_dict(checkpoint)
     model = model.to(device)
     
     # Use half precision for GPU

@@ -1,5 +1,18 @@
-
+# =============================================================================
+# IMPORTANT: Suppress TensorFlow/JAX warnings BEFORE any imports
+# =============================================================================
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['GRPC_VERBOSITY'] = 'ERROR'
+os.environ['GLOG_minloglevel'] = '3'
+os.environ['JAX_PLATFORMS'] = ''
+os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
+
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
 import sys
 import time
 import torch

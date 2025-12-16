@@ -356,7 +356,14 @@ def load_model(
     
     # Load weights
     _device = device or get_device()
-    model.load_state_dict(torch.load(weights_path, map_location=_device, weights_only=True))
+    # Load checkpoint - use weights_only=False since our checkpoints may contain
+    # optimizer state and other complex objects (PyTorch 2.6+ compatibility)
+    checkpoint = torch.load(weights_path, map_location=_device, weights_only=False)
+    # Handle both direct state_dict and wrapped checkpoint formats
+    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+        model.load_state_dict(checkpoint['model'])
+    else:
+        model.load_state_dict(checkpoint)
     
     # Move to device and set dtype
     model = model.to(_device)

@@ -1,11 +1,28 @@
+# =============================================================================
+# IMPORTANT: Suppress TensorFlow/JAX warnings BEFORE any imports
+# These must be set before tensorflow/jax are imported (even indirectly)
+# =============================================================================
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error only
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['GRPC_VERBOSITY'] = 'ERROR'
+os.environ['GLOG_minloglevel'] = '3'
+# Suppress JAX/XLA warnings
+os.environ['JAX_PLATFORMS'] = ''  # Disable JAX platform detection noise
+os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='  # Suppress XLA CUDA warnings
+
 import sys
 import time
 import warnings
 
-# Suppress noisy warnings (TensorFlow, torchao, etc.)
-os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')  # Suppress TF warnings
+# Suppress Python-level warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='torchao')
+warnings.filterwarnings('ignore', category=UserWarning, module='transformers')
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', message='.*computation placer.*')
+warnings.filterwarnings('ignore', message='.*cuFFT.*')
+warnings.filterwarnings('ignore', message='.*cuDNN.*')
+warnings.filterwarnings('ignore', message='.*cuBLAS.*')
 
 import torch
 
@@ -330,14 +347,14 @@ def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, t
                     if '\n' not in context_tunebody:
                         break   # Generated content is all metadata, abandon
 
-                    context_tunebody_liness = context_tunebody.split('\n')
+                    context_tunebody_lines = context_tunebody.split('\n')
                     if not context_tunebody.endswith('\n'):
-                        context_tunebody_liness = [context_tunebody_liness[i] + '\n' for i in range(len(context_tunebody_liness) - 1)] + [context_tunebody_liness[-1]]
+                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines) - 1)] + [context_tunebody_lines[-1]]
                     else:
-                        context_tunebody_liness = [context_tunebody_liness[i] + '\n' for i in range(len(context_tunebody_liness))]
+                        context_tunebody_lines = [context_tunebody_lines[i] + '\n' for i in range(len(context_tunebody_lines))]
 
-                    cut_index = len(context_tunebody_liness) // 2
-                    abc_code_slice = metadata + ''.join(context_tunebody_liness[-cut_index:])
+                    cut_index = len(context_tunebody_lines) // 2
+                    abc_code_slice = metadata + ''.join(context_tunebody_lines[-cut_index:])
 
                     input_patches = patchilizer.encode_generate(abc_code_slice)
 

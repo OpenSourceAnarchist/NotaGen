@@ -4,9 +4,26 @@ import os
 import threading
 import queue
 from io import TextIOBase
-from inference import inference_patch
 import datetime
 import subprocess
+
+# =============================================================================
+# Path Setup - Ensure we can find all resources regardless of cwd
+# =============================================================================
+
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+
+# Add project root to path for imports
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# Change to script directory so relative imports work
+os.chdir(SCRIPT_DIR)
+
+# Now import after path is set up
+from inference import inference_patch
 
 # =============================================================================
 # Style Presets
@@ -24,12 +41,9 @@ STYLE_PRESETS = {
 # Load Valid Prompts
 # =============================================================================
 
-# =============================================================================
-# Load Valid Prompts
-# =============================================================================
-
-# Predefined valid combinations set
-with open('prompts.txt', 'r') as f:
+# Predefined valid combinations set - use absolute path
+PROMPTS_FILE = os.path.join(SCRIPT_DIR, 'prompts.txt')
+with open(PROMPTS_FILE, 'r') as f:
     prompts = f.readlines()
 valid_combinations = set()
 for prompt in prompts:
@@ -96,14 +110,16 @@ def save_and_convert(abc_content, period, composer, instrumentation):
     prompt_str = f"{period}_{composer}_{instrumentation}"
     filename_base = f"{timestamp}_{prompt_str}"
     
-    abc_filename = f"{filename_base}.abc"
+    # Save ABC file in script directory
+    abc_filename = os.path.join(SCRIPT_DIR, f"{filename_base}.abc")
     with open(abc_filename, "w", encoding="utf-8") as f:
         f.write(abc_content)
 
-    xml_filename = f"{filename_base}.xml"
+    xml_filename = os.path.join(SCRIPT_DIR, f"{filename_base}.xml")
+    abc2xml_script = os.path.join(SCRIPT_DIR, 'abc2xml.py')
     try:
         subprocess.run(
-            ["python", "abc2xml.py", '-o', '.', abc_filename, ],
+            [sys.executable, abc2xml_script, '-o', SCRIPT_DIR, abc_filename],
             check=True,
             capture_output=True,
             text=True
@@ -112,7 +128,7 @@ def save_and_convert(abc_content, period, composer, instrumentation):
         error_msg = f"Conversion failed: {e.stderr}" if e.stderr else "Unknown error"
         raise gr.Error(f"ABC to XML conversion failed: {error_msg}. Please try to generate another composition.")
     
-    return f"Saved successfully: {abc_filename} -> {xml_filename}"
+    return f"Saved successfully: {os.path.basename(abc_filename)} -> {os.path.basename(xml_filename)}"
 
 
 

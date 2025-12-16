@@ -1,6 +1,20 @@
-
+import os
+import sys
 import time
+import warnings
+
+# Suppress noisy warnings (TensorFlow, torchao, etc.)
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')  # Suppress TF warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='torchao')
+
 import torch
+
+# Ensure we can find our modules regardless of cwd
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from utils import *
 from config import INFERENCE_WEIGHTS_PATH, PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS, HIDDEN_SIZE
 from transformers import GPT2Config
@@ -10,12 +24,16 @@ from abctoolkit.duration import calculate_bartext_duration
 
 Note_list = Note_list + ['z', 'x']
 
+# Device selection with clear logging
 if torch.cuda.is_available():
     device = torch.device("cuda")
+    print(f"🚀 Using CUDA: {torch.cuda.get_device_name(0)}")
 elif torch.backends.mps.is_available():
     device = torch.device("mps")
+    print("🍎 Using Apple MPS")
 else:
     device = torch.device("cpu")
+    print("💻 Using CPU (GPU not available)")
 
 patchilizer = Patchilizer()
 
@@ -63,7 +81,25 @@ model = prepare_model_for_kbit_training(
     use_gradient_checkpointing=False  
 )
 
-print("Parameter Number: " + str(sum(p.numel() for p in model.parameters() if p.requires_grad)))
+print(f"📊 Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+# Validate weights path before loading
+if not INFERENCE_WEIGHTS_PATH:
+    raise FileNotFoundError(
+        "\n❌ NotaGen weights file not found!\n\n"
+        "Please download the weights first:\n"
+        "  wget https://huggingface.co/ElectricAlexis/NotaGen/resolve/main/weights_notagenx_p_size_16_p_length_1024_p_layers_20_h_size_1280.pth\n\n"
+        "Or set the NOTAGEN_WEIGHTS environment variable:\n"
+        "  export NOTAGEN_WEIGHTS=/path/to/weights.pth"
+    )
+
+if not os.path.exists(INFERENCE_WEIGHTS_PATH):
+    raise FileNotFoundError(
+        f"\n❌ Weights file not found at: {INFERENCE_WEIGHTS_PATH}\n\n"
+        "Please download the weights or check the path."
+    )
+
+print(f"📥 Loading weights from: {INFERENCE_WEIGHTS_PATH}")
 
 checkpoint = torch.load(INFERENCE_WEIGHTS_PATH, map_location=torch.device(device), weights_only=False)
 model.load_state_dict(checkpoint['model'])

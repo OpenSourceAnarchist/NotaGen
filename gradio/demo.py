@@ -1,5 +1,6 @@
 import gradio as gr
 import sys
+import os
 import threading
 import queue
 from io import TextIOBase
@@ -323,8 +324,14 @@ button#💾-save-convert:hover {
 demo.css = css
 
 if __name__ == "__main__":
-
+    # Enable share=True via environment variable for Colab/remote access
+    # Set GRADIO_SHARE=1 or COLAB=1 to enable sharing
+    share = os.environ.get('GRADIO_SHARE', '').lower() in ('1', 'true', 'yes') or \
+            os.environ.get('COLAB', '').lower() in ('1', 'true', 'yes') or \
+            'google.colab' in sys.modules
+    
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7861
+        server_port=7861,
+        share=share
     )

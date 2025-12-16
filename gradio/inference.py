@@ -65,7 +65,7 @@ model = prepare_model_for_kbit_training(
 
 print("Parameter Number: " + str(sum(p.numel() for p in model.parameters() if p.requires_grad)))
 
-checkpoint = torch.load(INFERENCE_WEIGHTS_PATH, map_location=torch.device(device))
+checkpoint = torch.load(INFERENCE_WEIGHTS_PATH, map_location=torch.device(device), weights_only=False)
 model.load_state_dict(checkpoint['model'])
 model = model.to(device)
 model.eval()

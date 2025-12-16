@@ -1,20 +1,48 @@
 # =============================================================================
-# IMPORTANT: Suppress TensorFlow/JAX warnings BEFORE any imports
+# CRITICAL: Prevent TensorFlow from registering CUDA before PyTorch
+# These MUST be set before ANY imports that could trigger TF loading
 # =============================================================================
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# Completely disable TensorFlow's CUDA support to prevent factory registration conflicts
+# This is the ROOT CAUSE of the cuDNN/cuBLAS "already registered" errors
+os.environ['CUDA_VISIBLE_DEVICES_FOR_TF'] = ''  # Hide GPUs from TF specifically
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'false'
+os.environ['TF_GPU_ALLOCATOR'] = ''
+os.environ['TF_CUDA_PATHS'] = ''
+
+# Tell TensorFlow to use CPU only (prevents CUDA factory registration)
+os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Temporarily hide GPUs
+
+# Now import TensorFlow-related suppression
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL only
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '3'
-os.environ['JAX_PLATFORMS'] = ''
-os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
 os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_DEPRECATION_WARNINGS'] = '0'
 
+# Disable JAX GPU
+os.environ['JAX_PLATFORMS'] = 'cpu'
+os.environ['XLA_FLAGS'] = ''
+
+# Abseil logging (the source of those E0000/W0000 messages)
+os.environ['ABSL_LOGGING_LEVEL'] = 'FATAL'
+
 import warnings
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore')
+
+# Import TensorFlow first (if it gets imported) to let it initialize on CPU
+try:
+    import tensorflow as tf
+    # Force TF to CPU mode
+    tf.config.set_visible_devices([], 'GPU')
+except ImportError:
+    pass
+
+# NOW restore CUDA visibility for PyTorch
+# Get the original CUDA devices (or default to all)
+os.environ['CUDA_VISIBLE_DEVICES'] = os.environ.get('ORIGINAL_CUDA_VISIBLE_DEVICES', '0')
 
 import gradio as gr
 import sys
@@ -116,25 +144,17 @@ def build_custom_preamble(tempo, key, time_sig, expression, unit_length):
     # Add tempo marking
     if tempo and tempo != "(Auto)":
         tempo_info = TEMPO_PRESETS.get(tempo)
-        if tempo_info and isinstance(tempo_info, dict):
-            bpm_range = tempo_info.get("bpm_range", (100, 120))
-            bpm = (bpm_range[0] + bpm_range[1]) // 2
-            lines.append(f'Q:1/4={bpm}')
-        elif tempo_info and isinstance(tempo_info, tuple):
+        if tempo_info and isinstance(tempo_info, tuple):
             bpm = (tempo_info[0] + tempo_info[1]) // 2
             lines.append(f'Q:1/4={bpm}')
     
-    # Add key signature
+    # Add key signature (KEY_SIGNATURES is a list, value is used directly)
     if key and key != "(Auto)":
-        key_value = KEY_SIGNATURES.get(key, key)
-        if key_value:
-            lines.append(f'K:{key_value}')
+        lines.append(f'K:{key}')
     
-    # Add time signature
+    # Add time signature (TIME_SIGNATURES is a list, value is used directly)
     if time_sig and time_sig != "(Auto)":
-        time_value = TIME_SIGNATURES.get(time_sig, time_sig)
-        if time_value:
-            lines.append(f'M:{time_value}')
+        lines.append(f'M:{time_sig}')
     
     # Add unit note length
     if unit_length and unit_length != "(Auto)":

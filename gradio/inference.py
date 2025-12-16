@@ -1,16 +1,29 @@
 # =============================================================================
-# IMPORTANT: Suppress TensorFlow/JAX warnings BEFORE any imports
-# These must be set before tensorflow/jax are imported (even indirectly)
+# CRITICAL: Prevent TensorFlow CUDA registration conflicts with PyTorch
+# These MUST be set FIRST, before any imports
 # =============================================================================
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error only
+
+# Save original CUDA devices before hiding them
+_original_cuda = os.environ.get('CUDA_VISIBLE_DEVICES', '0')
+
+# Temporarily hide GPUs from TensorFlow to prevent CUDA factory conflicts
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+# TensorFlow CPU-only and logging suppression
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL only
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'false'
+
+# JAX CPU-only
+os.environ['JAX_PLATFORMS'] = 'cpu'
+os.environ['XLA_FLAGS'] = ''
+
+# Abseil/gRPC logging (source of E0000/W0000 messages)
 os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '3'
-os.environ['JAX_PLATFORMS'] = ''
-os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
-# Additional C++ log suppression
 os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
+os.environ['ABSL_LOGGING_LEVEL'] = 'FATAL'
 os.environ['TF_ENABLE_DEPRECATION_WARNINGS'] = '0'
 
 import sys
@@ -19,8 +32,17 @@ import re
 import warnings
 from typing import Optional, List, Generator, Callable, Any
 
-# Suppress Python-level warnings aggressively
 warnings.filterwarnings('ignore')
+
+# Pre-import TensorFlow on CPU to prevent CUDA conflicts
+try:
+    import tensorflow as tf
+    tf.config.set_visible_devices([], 'GPU')
+except ImportError:
+    pass
+
+# NOW restore CUDA for PyTorch
+os.environ['CUDA_VISIBLE_DEVICES'] = _original_cuda
 
 import torch
 

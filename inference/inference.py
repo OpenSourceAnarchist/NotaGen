@@ -1,20 +1,37 @@
 # =============================================================================
-# IMPORTANT: Suppress TensorFlow/JAX warnings BEFORE any imports
+# CRITICAL: Prevent TensorFlow CUDA registration conflicts with PyTorch
 # =============================================================================
 import os
+
+# Save original CUDA devices before hiding them
+_original_cuda = os.environ.get('CUDA_VISIBLE_DEVICES', '0')
+
+# Temporarily hide GPUs to prevent TF CUDA factory conflicts
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+# TensorFlow/JAX CPU-only and logging suppression
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['JAX_PLATFORMS'] = 'cpu'
+os.environ['XLA_FLAGS'] = ''
 os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '3'
-os.environ['JAX_PLATFORMS'] = ''
-os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir='
 os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
+os.environ['ABSL_LOGGING_LEVEL'] = 'FATAL'
 os.environ['TF_ENABLE_DEPRECATION_WARNINGS'] = '0'
 
 import warnings
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore')
+
+# Pre-import TensorFlow on CPU
+try:
+    import tensorflow as tf
+    tf.config.set_visible_devices([], 'GPU')
+except ImportError:
+    pass
+
+# Restore CUDA for PyTorch
+os.environ['CUDA_VISIBLE_DEVICES'] = _original_cuda
 
 import sys
 import time

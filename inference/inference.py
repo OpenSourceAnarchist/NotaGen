@@ -1,20 +1,24 @@
 
 import os
+import sys
 import time
 import torch
 from utils import *
 from config import *
-from transformers import GPT2Config, LlamaConfig
-from abctoolkit.utils import Exclaim_re, Quote_re, SquareBracket_re, Barline_regexPattern
-from abctoolkit.transpose import Note_list, Pitch_sign_list
+from transformers import GPT2Config
+
+# Add parent directory to path for notagen imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from notagen.device import get_device
+
+from abctoolkit.utils import Barline_regexPattern
+from abctoolkit.transpose import Note_list
 from abctoolkit.duration import calculate_bartext_duration
 
 Note_list = Note_list + ['z', 'x']
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
+# Use centralized device detection with CUDA/MPS/CPU support
+device = get_device(verbose=True)
 
 os.makedirs(ORIGINAL_OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(INTERLEAVED_OUTPUT_FOLDER, exist_ok=True)
@@ -38,7 +42,7 @@ model = NotaGenLMHeadModel(encoder_config=patch_config, decoder_config=byte_conf
 
 print("Parameter Number: " + str(sum(p.numel() for p in model.parameters() if p.requires_grad)))
 
-checkpoint = torch.load(INFERENCE_WEIGHTS_PATH, map_location=torch.device(device))
+checkpoint = torch.load(INFERENCE_WEIGHTS_PATH, map_location=device, weights_only=False)
 model.load_state_dict(checkpoint['model'])
 model = model.to(device)
 model.eval()

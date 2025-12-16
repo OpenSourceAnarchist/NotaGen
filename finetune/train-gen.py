@@ -1,20 +1,30 @@
 import os
 import gc
+import sys
 import time
-import math
 import json
 import wandb
 import torch
 import random
-import numpy as np
+
+# Add parent directory to path for notagen imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from notagen.device import get_device, get_autocast_device_type, set_seed, empty_cache
+
 from abctoolkit.transpose import Key2index, Key2Mode
 from utils import *
-from config import *
+from config import (
+    DATA_TRAIN_INDEX_PATH, DATA_EVAL_INDEX_PATH, PRETRAINED_PATH,
+    PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS, HIDDEN_SIZE,
+    PATCH_STREAM, PATCH_SAMPLING_BATCH_SIZE, BATCH_SIZE, LEARNING_RATE,
+    NUM_EPOCHS, ACCUMULATION_STEPS, LOAD_FROM_CHECKPOINT,
+    WANDB_LOGGING, WANDB_KEY, WANDB_NAME, WEIGHTS_PATH, LOGS_PATH, NAME
+)
 from tqdm import tqdm
 from copy import deepcopy
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import Dataset, DataLoader
-from transformers import GPT2Config, LlamaConfig, get_scheduler, get_constant_schedule_with_warmup
+from transformers import GPT2Config, get_constant_schedule_with_warmup
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
@@ -23,25 +33,24 @@ Index2Key = {index: key for key, index in Key2index.items() if index not in [1, 
 Mode2Key = {mode: key for key, mode_list in Key2Mode.items() for mode in mode_list }
 
 # Set up distributed training
-world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
-global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else 0
-local_rank = int(os.environ['LOCAL_RANK']) if 'LOCAL_RANK' in os.environ else 0
+world_size = int(os.environ.get('WORLD_SIZE', 1))
+global_rank = int(os.environ.get('RANK', 0))
+local_rank = int(os.environ.get('LOCAL_RANK', 0))
 
 if world_size > 1:
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
-    dist.init_process_group(backend='nccl') if world_size > 1 else None
+    dist.init_process_group(backend='nccl')
 else:
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    # Use centralized device detection with CUDA/MPS/CPU support
+    device = get_device(verbose=True)
+    
+# Get autocast device type (for mixed precision training)
+autocast_dtype = get_autocast_device_type(device)
     
 # Set random seed
 seed = 0 + global_rank
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+set_seed(seed, device)
 
 batch_size = BATCH_SIZE
 
@@ -70,8 +79,9 @@ print("Parameter Number: "+str(sum(p.numel() for p in model.parameters() if p.re
 if world_size > 1:
     model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=True)
 
-scaler = GradScaler()
-is_autocast = True
+# GradScaler only for CUDA
+scaler = GradScaler() if device.type == 'cuda' else None
+is_autocast = device.type in ('cuda', 'mps')
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
 
@@ -92,8 +102,11 @@ def clear_unused_tensors():
             if isinstance(state, torch.Tensor)  # Ensure only tensors are considered
         }
 
-        # List of all CUDA tensors currently in memory
-        tensors = [obj for obj in gc.get_objects() if isinstance(obj, torch.Tensor) and obj.is_cuda]
+        # List of all GPU tensors currently in memory
+        if device.type == 'cuda':
+            tensors = [obj for obj in gc.get_objects() if isinstance(obj, torch.Tensor) and obj.is_cuda]
+        else:
+            tensors = []
         
         # Create weak references to avoid interfering with garbage collection
         tensor_refs = [weakref.ref(tensor) for tensor in tensors]
@@ -110,7 +123,7 @@ def clear_unused_tensors():
     finally:
         gc.enable()  # Re-enable garbage collection
         gc.collect()  # Force a garbage collection
-        torch.cuda.empty_cache()  # Clear the CUDA cache
+        empty_cache(device)  # Clear the device cache
 
 def collate_batch(input_batches):
     
@@ -200,12 +213,21 @@ def train_epoch(epoch):
     for batch in tqdm_train_set:
         minibatches = split_into_minibatches(batch[0], batch[1], BATCH_SIZE//ACCUMULATION_STEPS)
         for minibatch in minibatches:
-            with autocast():
+            # Use autocast for mixed precision (CUDA only)
+            if scaler is not None:
+                with autocast():
+                    loss = process_one_batch(minibatch) / ACCUMULATION_STEPS
+                scaler.scale(loss).backward()
+            else:
                 loss = process_one_batch(minibatch) / ACCUMULATION_STEPS
-            scaler.scale(loss).backward()
+                loss.backward()
             total_train_loss += loss.item()
-        scaler.step(optimizer)
-        scaler.update()
+        
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         
         lr_scheduler.step()
         model.zero_grad(set_to_none=True)

@@ -1,38 +1,63 @@
+"""
+Finetune configuration for NotaGen.
+Imports core model settings from notagen.config.
+"""
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Configuration for the data
-DATA_TRAIN_INDEX_PATH = "" 
-DATA_EVAL_INDEX_PATH  = ""
+# Import model configuration from central config
+from notagen.config import (
+    SMALL_CONFIG, MEDIUM_CONFIG, LARGE_CONFIG,
+    get_model_config, find_weights, parse_weights_filename
+)
 
-# Configuration for the model
-PATCH_STREAM = True                                             # Stream training / inference
-PATCH_SIZE = 16                                                # Patch Size
-PATCH_LENGTH = 1024                                             # Patch Length
-CHAR_NUM_LAYERS = 6                                             # Number of layers in the decoder
-PATCH_NUM_LAYERS = 20                                           # Number of layers in the encoder
-HIDDEN_SIZE = 1280                                               # Hidden Size
+# =============================================================================
+# Data Configuration
+# =============================================================================
+DATA_TRAIN_INDEX_PATH = ""  # Path to training data index
+DATA_EVAL_INDEX_PATH = ""   # Path to evaluation data index
 
-# Configuration for the training
-BATCH_SIZE = 1         
-LEARNING_RATE = 1e-5   
-NUM_EPOCHS = 64                                                 # Number of epochs to train for (if early stopping doesn't intervene)
-ACCUMULATION_STEPS = 1                                          # Accumulation steps to simulate large batch size
-PATCH_SAMPLING_BATCH_SIZE = 0                                   # Batch size for patch during training, 0 for full conaudio
-LOAD_FROM_CHECKPOINT = False                                    # Whether to load weights from a checkpoint
-WANDB_LOGGING = False                                           # Whether to log to wandb
+# =============================================================================
+# Model Configuration - Should match pretrained model
+# =============================================================================
+# For finetuning, use LARGE_CONFIG to match NotaGen-X pretrained weights:
+_MODEL = LARGE_CONFIG
+
+PATCH_STREAM = True
+PATCH_SIZE = _MODEL.patch_size
+PATCH_LENGTH = _MODEL.patch_length
+PATCH_NUM_LAYERS = _MODEL.patch_num_layers
+CHAR_NUM_LAYERS = _MODEL.char_num_layers
+HIDDEN_SIZE = _MODEL.hidden_size
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+BATCH_SIZE = 1
+LEARNING_RATE = 1e-5
+NUM_EPOCHS = 64
+ACCUMULATION_STEPS = 1
+PATCH_SAMPLING_BATCH_SIZE = 0  # 0 = use full patches
+LOAD_FROM_CHECKPOINT = False
+
+# Wandb logging
+WANDB_LOGGING = False
 WANDB_KEY = '<your_wandb_key>'
 
-PRETRAINED_PATH = ""                # Path of pretrained weights
-EXP_TAG = ''                                            # Experiment tag for name differentiation
-NAME =  EXP_TAG + \
-        "_p_size_" + str(PATCH_SIZE) + \
-        "_p_length_" + str(PATCH_LENGTH) + \
-        "_p_layers_" + str(PATCH_NUM_LAYERS) + \
-        "_c_layers_" + str(CHAR_NUM_LAYERS) + \
-        "_h_size_" + str(HIDDEN_SIZE) + \
-        "_lr_" + str(LEARNING_RATE) + \
-        "_batch_" + str(BATCH_SIZE)
+# Path to pretrained weights to finetune from
+PRETRAINED_PATH = ""
 
-WEIGHTS_PATH = "weights_notagen_" + NAME + ".pth"                  # Path to save weights
-LOGS_PATH    = "logs_notagen_"    + NAME + ".txt"                     # Path to save logs
+# =============================================================================
+# Auto-generated paths
+# =============================================================================
+EXP_TAG = ''
+NAME = (
+    f"{EXP_TAG}_p_size_{PATCH_SIZE}_p_length_{PATCH_LENGTH}"
+    f"_p_layers_{PATCH_NUM_LAYERS}_c_layers_{CHAR_NUM_LAYERS}"
+    f"_h_size_{HIDDEN_SIZE}_lr_{LEARNING_RATE}_batch_{BATCH_SIZE}"
+)
+
+WEIGHTS_PATH = f"weights_notagen_{NAME}.pth"
+LOGS_PATH = f"logs_notagen_{NAME}.txt"
 WANDB_NAME = NAME

@@ -1,35 +1,60 @@
+"""
+Reinforcement Learning (DPO/DPOP) configuration for NotaGen.
+Imports core model settings from notagen.config.
+"""
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Configuration for the data
-DATA_INDEX_PATH = ''
+# Import model configuration from central config
+from notagen.config import (
+    SMALL_CONFIG, MEDIUM_CONFIG, LARGE_CONFIG,
+    get_model_config, find_weights, parse_weights_filename
+)
 
-# Configuration for the model
+# =============================================================================
+# Data Configuration
+# =============================================================================
+DATA_INDEX_PATH = ''  # Path to preference data
+
+# =============================================================================
+# Model Configuration - Should match pretrained model
+# =============================================================================
+# For RL, use LARGE_CONFIG to match NotaGen-X pretrained weights:
+_MODEL = LARGE_CONFIG
+
 PATCH_STREAM = True
-PATCH_SIZE = 16                                                # Patch Size
-PATCH_LENGTH = 1024                                             # Patch Length
-CHAR_NUM_LAYERS = 6                                             # Number of layers in the decoder
-PATCH_NUM_LAYERS = 20                                           # Number of layers in the encoder
-HIDDEN_SIZE = 1280                                               # Hidden Size
+PATCH_SIZE = _MODEL.patch_size
+PATCH_LENGTH = _MODEL.patch_length
+PATCH_NUM_LAYERS = _MODEL.patch_num_layers
+CHAR_NUM_LAYERS = _MODEL.char_num_layers
+HIDDEN_SIZE = _MODEL.hidden_size
 
-# Configuration for the training     
-BETA = 0.1                                                      # beta in DPO's objective function
-LAMBDA = 10                                                     # lambda in DPOP's objective function
+# =============================================================================
+# RL Training Configuration (DPO/DPOP)
+# =============================================================================
+BETA = 0.1       # Beta in DPO's objective function
+LAMBDA = 10      # Lambda in DPOP's objective function
 LEARNING_RATE = 1e-6
-OPTIMIZATION_STEPS = 10000                                      # Optimization steps for DPO
-WANDB_LOGGING = False                                           # Whether to log to wandb
+OPTIMIZATION_STEPS = 10000
+
+# Wandb logging
+WANDB_LOGGING = False
 WANDB_KEY = '<your_wandb_key>'
 
+# Path to pretrained weights to start RL from
 PRETRAINED_PATH = ''
-EXP_TAG = ''
-NAME =  EXP_TAG + \
-        "_beta_" + str(BETA) + \
-        "_lambda_" + str(LAMBDA) + \
-        "_p_size_" + str(PATCH_SIZE) + \
-        "_p_length_" + str(PATCH_LENGTH) + \
-        "_p_layers_" + str(PATCH_NUM_LAYERS) + \
-        "_c_layers_" + str(CHAR_NUM_LAYERS) + \
-        "_h_size_" + str(HIDDEN_SIZE) + \
-        "_lr_" + str(LEARNING_RATE)
 
-WEIGHTS_PATH = "weights_notagen_" + NAME + ".pth"                  # Path to save weights
+# =============================================================================
+# Auto-generated paths
+# =============================================================================
+EXP_TAG = ''
+NAME = (
+    f"{EXP_TAG}_beta_{BETA}_lambda_{LAMBDA}"
+    f"_p_size_{PATCH_SIZE}_p_length_{PATCH_LENGTH}"
+    f"_p_layers_{PATCH_NUM_LAYERS}_c_layers_{CHAR_NUM_LAYERS}"
+    f"_h_size_{HIDDEN_SIZE}_lr_{LEARNING_RATE}"
+)
+
+WEIGHTS_PATH = f"weights_notagen_{NAME}.pth"
 WANDB_NAME = NAME

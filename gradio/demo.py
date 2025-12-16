@@ -6,7 +6,26 @@ from io import TextIOBase
 from inference import inference_patch
 import datetime
 import subprocess
-import os
+
+# =============================================================================
+# Style Presets
+# =============================================================================
+
+STYLE_PRESETS = {
+    "Balanced (Default)": {"top_k": 9, "top_p": 0.9, "temperature": 1.2},
+    "Conservative": {"top_k": 5, "top_p": 0.85, "temperature": 0.9},
+    "Creative": {"top_k": 15, "top_p": 0.95, "temperature": 1.5},
+    "Very Conservative": {"top_k": 3, "top_p": 0.7, "temperature": 0.7},
+    "Experimental": {"top_k": 20, "top_p": 0.98, "temperature": 1.8},
+}
+
+# =============================================================================
+# Load Valid Prompts
+# =============================================================================
+
+# =============================================================================
+# Load Valid Prompts
+# =============================================================================
 
 # Predefined valid combinations set
 with open('prompts.txt', 'r') as f:
@@ -21,6 +40,18 @@ for prompt in prompts:
 periods = sorted({p for p, _, _ in valid_combinations})
 composers = sorted({c for _, c, _ in valid_combinations})
 instruments = sorted({i for _, _, i in valid_combinations})
+
+
+# =============================================================================
+# UI Update Functions
+# =============================================================================
+
+def update_preset(preset_name):
+    """Update sliders when a preset is selected."""
+    if preset_name in STYLE_PRESETS:
+        preset = STYLE_PRESETS[preset_name]
+        return preset["top_k"], preset["top_p"], preset["temperature"]
+    return 9, 0.9, 1.2  # Default values
 
 # Dynamic component updates
 def update_components(period, composer):
@@ -84,7 +115,8 @@ def save_and_convert(abc_content, period, composer, instrumentation):
 
 
 
-def generate_music(period, composer, instrumentation):
+def generate_music_ui(period, composer, instrumentation, top_k, top_p, temperature):
+    """Generate music with custom sampling parameters."""
     if (period, composer, instrumentation) not in valid_combinations:
         raise gr.Error("Invalid prompt combination! Please re-select from the period options")
     
@@ -95,7 +127,13 @@ def generate_music(period, composer, instrumentation):
     result_container = []
     def run_inference():
         try:
-            result_container.append(inference_patch(period, composer, instrumentation))
+            # Pass sampling parameters to inference
+            result_container.append(
+                inference_patch(
+                    period, composer, instrumentation,
+                    top_k=int(top_k), top_p=float(top_p), temperature=float(temperature)
+                )
+            )
         finally:
             sys.stdout = original_stdout
     
@@ -119,54 +157,101 @@ def generate_music(period, composer, instrumentation):
     final_result = result_container[0] if result_container else ""
     yield process_output, final_result
 
-with gr.Blocks() as demo:
-    gr.Markdown("## NotaGen")
+
+# =============================================================================
+# Gradio UI
+# =============================================================================
+
+with gr.Blocks(title="NotaGen - Music Generation") as demo:
+    gr.Markdown("## 🎵 NotaGen - Symbolic Music Generation")
+    gr.Markdown("Generate classical music in ABC notation using AI. Select a period, composer, and instrumentation to get started.")
     
     with gr.Row():
-        # 左侧栏
-        with gr.Column():
+        # Left column - Input controls
+        with gr.Column(scale=1):
+            gr.Markdown("### 🎼 Music Style")
             period_dd = gr.Dropdown(
                 choices=periods,
                 value=None, 
                 label="Period",
-                interactive=True
+                interactive=True,
+                info="Select a musical period"
             )
             composer_dd = gr.Dropdown(
                 choices=[],
                 value=None,
                 label="Composer",
-                interactive=False
+                interactive=False,
+                info="Select a composer from the chosen period"
             )
             instrument_dd = gr.Dropdown(
                 choices=[],
                 value=None,
                 label="Instrumentation",
-                interactive=False
+                interactive=False,
+                info="Select an instrumentation"
             )
             
-            generate_btn = gr.Button("Generate!", variant="primary")
+            gr.Markdown("### ⚙️ Generation Settings")
             
+            preset_dd = gr.Dropdown(
+                choices=list(STYLE_PRESETS.keys()),
+                value="Balanced (Default)",
+                label="Style Preset",
+                info="Quick presets for different generation styles"
+            )
+            
+            with gr.Accordion("Advanced Settings", open=False):
+                top_k_slider = gr.Slider(
+                    minimum=1,
+                    maximum=50,
+                    value=9,
+                    step=1,
+                    label="Top-K",
+                    info="Higher = more diverse vocabulary (1-50)"
+                )
+                top_p_slider = gr.Slider(
+                    minimum=0.1,
+                    maximum=1.0,
+                    value=0.9,
+                    step=0.05,
+                    label="Top-P (Nucleus)",
+                    info="Higher = more diverse tokens (0.1-1.0)"
+                )
+                temperature_slider = gr.Slider(
+                    minimum=0.1,
+                    maximum=2.0,
+                    value=1.2,
+                    step=0.1,
+                    label="Temperature",
+                    info="Higher = more random/creative (0.1-2.0)"
+                )
+            
+            generate_btn = gr.Button("🎹 Generate Music!", variant="primary", size="lg")
+            
+            gr.Markdown("### 📊 Generation Progress")
             process_output = gr.Textbox(
-                label="Generation process",
+                label="",
                 interactive=False,
-                lines=15,
-                max_lines=15,
+                lines=12,
+                max_lines=12,
                 placeholder="Generation progress will be shown here...",
                 elem_classes="process-output"
             )
 
-        # 右侧栏
-        with gr.Column():
+        # Right column - Output
+        with gr.Column(scale=1):
+            gr.Markdown("### 📝 Generated ABC Notation")
             final_output = gr.Textbox(
-                label="Post-processed ABC notation scores",
+                label="",
                 interactive=True,
-                lines=23,
+                lines=20,
                 placeholder="Post-processed ABC scores will be shown here...",
                 elem_classes="final-output"
             )
             
             with gr.Row():
-                save_btn = gr.Button("💾 Save as ABC & XML files", variant="secondary")
+                save_btn = gr.Button("💾 Save as ABC & XML", variant="secondary")
             
             save_status = gr.Textbox(
                 label="Save Status",
@@ -175,6 +260,7 @@ with gr.Blocks() as demo:
                 max_lines=2
             )
     
+    # Event handlers
     period_dd.change(
         update_components,
         inputs=[period_dd, composer_dd],
@@ -186,9 +272,17 @@ with gr.Blocks() as demo:
         outputs=[composer_dd, instrument_dd]
     )
     
+    # Preset updates sliders
+    preset_dd.change(
+        update_preset,
+        inputs=[preset_dd],
+        outputs=[top_k_slider, top_p_slider, temperature_slider]
+    )
+    
+    # Generate with all parameters
     generate_btn.click(
-        generate_music,
-        inputs=[period_dd, composer_dd, instrument_dd],
+        generate_music_ui,
+        inputs=[period_dd, composer_dd, instrument_dd, top_k_slider, top_p_slider, temperature_slider],
         outputs=[process_output, final_output]
     )
     

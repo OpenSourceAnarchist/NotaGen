@@ -1,12 +1,11 @@
 
-import os
 import time
 import torch
 from utils import *
-from config import *
+from config import INFERENCE_WEIGHTS_PATH, PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS, HIDDEN_SIZE
 from transformers import GPT2Config
-from abctoolkit.utils import Exclaim_re, Quote_re, SquareBracket_re, Barline_regexPattern
-from abctoolkit.transpose import Note_list, Pitch_sign_list
+from abctoolkit.utils import Barline_regexPattern
+from abctoolkit.transpose import Note_list
 from abctoolkit.duration import calculate_bartext_duration
 
 Note_list = Note_list + ['z', 'x']
@@ -185,7 +184,28 @@ def rest_unreduce(abc_lines):
     return unreduced_lines
 
 
-def inference_patch(period, composer, instrumentation):
+def inference_patch(period, composer, instrumentation, top_k=None, top_p=None, temperature=None):
+    """
+    Generate music notation using the NotaGen model.
+    
+    Args:
+        period: Musical period (e.g., 'Classical', 'Romantic')
+        composer: Composer name
+        instrumentation: Instrument description
+        top_k: Top-k sampling parameter (default: from config)
+        top_p: Top-p (nucleus) sampling parameter (default: from config)
+        temperature: Sampling temperature (default: from config)
+    
+    Returns:
+        Generated ABC notation string
+    """
+    # Use config defaults if not specified
+    if top_k is None:
+        top_k = TOP_K
+    if top_p is None:
+        top_p = TOP_P
+    if temperature is None:
+        temperature = TEMPERATURE
 
     prompt_lines=[
     '%' + period + '\n',
@@ -223,17 +243,17 @@ def inference_patch(period, composer, instrumentation):
             while True:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
                     predicted_patch = model.generate(input_patches.unsqueeze(0),
-                                                    top_k=TOP_K,
-                                                    top_p=TOP_P,
-                                                    temperature=TEMPERATURE)
+                                                    top_k=top_k,
+                                                    top_p=top_p,
+                                                    temperature=temperature)
                 if not tunebody_flag and patchilizer.decode([predicted_patch]).startswith('[r:'):  # 初次进入tunebody，必须以[r:0/开头
                     tunebody_flag = True
                     r0_patch = torch.tensor([ord(c) for c in '[r:0/']).unsqueeze(0).to(device)
                     temp_input_patches = torch.concat([input_patches, r0_patch], axis=-1)
                     predicted_patch = model.generate(temp_input_patches.unsqueeze(0),
-                                                    top_k=TOP_K,
-                                                    top_p=TOP_P,
-                                                    temperature=TEMPERATURE)
+                                                    top_k=top_k,
+                                                    top_p=top_p,
+                                                    temperature=temperature)
                     predicted_patch = [ord(c) for c in '[r:0/'] + predicted_patch
                 if predicted_patch[0] == patchilizer.bos_token_id and predicted_patch[1] == patchilizer.eos_token_id:
                     end_flag = True

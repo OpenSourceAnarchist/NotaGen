@@ -1,15 +1,26 @@
+"""
+Gradio Demo Configuration for NotaGen
+
+Imports configuration from the centralized notagen.config module.
+"""
+
 import os
+import sys
 
-# Configurations for inference
-INFERENCE_WEIGHTS_PATH = 'weights_notagenx_p_size_16_p_length_1024_p_layers_20_h_size_1280.pth'               # Path to weights for inference# Folder to save output files
-TOP_K = 9                                                       # Top k for sampling
-TOP_P = 0.9                                                      # Top p for sampling
-TEMPERATURE = 1.2                                                 # Temperature for sampling
+# Add parent directory to path for notagen imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Configurations for model
-PATCH_STREAM = True                                             # Stream training / inference
-PATCH_SIZE = 16                                                # Patch Size
-PATCH_LENGTH = 1024                                             # Patch Length
-CHAR_NUM_LAYERS = 6                                             # Number of layers in the decoder
-PATCH_NUM_LAYERS = 20                                           # Number of layers in the encoder
-HIDDEN_SIZE = 1280                                               # Hidden Size
+# Import from centralized config
+from notagen.config import (
+    PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS,
+    HIDDEN_SIZE, PATCH_STREAM,
+    TOP_K, TOP_P, TEMPERATURE,
+    find_weights,
+)
+
+# Auto-detect weights or use environment variable
+_found_weights = find_weights()
+INFERENCE_WEIGHTS_PATH = os.environ.get(
+    'NOTAGEN_WEIGHTS',
+    str(_found_weights[0]) if _found_weights else ''
+)

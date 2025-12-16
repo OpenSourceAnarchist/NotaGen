@@ -1,32 +1,33 @@
 import os
-import gc
-import time
-import math
+import sys
 import json
 import wandb
 import torch
 import random
-import numpy as np
-from abctoolkit.transpose import Key2index, Key2Mode
+
+# Add parent directory to path for notagen imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from notagen.device import get_device, set_seed
+
 from utils import *
-from config import *
-from data import generate_preference_dict
+from config import (
+    DATA_INDEX_PATH, PRETRAINED_PATH,
+    PATCH_SIZE, PATCH_LENGTH, PATCH_NUM_LAYERS, CHAR_NUM_LAYERS, HIDDEN_SIZE,
+    PATCH_STREAM, BETA, LAMBDA, LEARNING_RATE, OPTIMIZATION_STEPS,
+    WANDB_LOGGING, WANDB_KEY, WANDB_NAME, WEIGHTS_PATH, NAME
+)
 from tqdm import tqdm
 from copy import deepcopy
-from torch.utils.data import Dataset, DataLoader
-from transformers import GPT2Config, get_scheduler, get_constant_schedule_with_warmup
+from torch.utils.data import Dataset
+from transformers import GPT2Config, get_constant_schedule_with_warmup
 
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+# Use centralized device detection with CUDA/MPS/CPU support
+device = get_device(verbose=True)
     
 # Set random seed
 seed = 0
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+set_seed(seed, device)
 
 patchilizer = Patchilizer()
 

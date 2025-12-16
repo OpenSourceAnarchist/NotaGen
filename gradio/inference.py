@@ -43,13 +43,9 @@ Note_list = Note_list + ['z', 'x']
 # End-of-Piece Detection Patterns
 # =============================================================================
 
-# Patterns that indicate end of a piece
-END_PATTERNS = [
-    r'%end\s*$',           # Explicit end marker
-    r'\|]\s*$',            # Final bar line
-    r':?\|\]\s*$',         # Repeat + final bar
-    r'\|\|\s*$',           # Double bar line at end
-]
+# Minimum content length before we even consider checking for completion
+# This prevents premature termination on just the preamble
+MIN_CONTENT_FOR_COMPLETION = 500  # At least 500 chars of actual content
 
 # Pattern for detecting start of a new piece (after first one)
 NEW_PIECE_PATTERN = re.compile(r'^%[A-Z][a-z]+\s*$')  # %Classical, %Romantic, etc.
@@ -250,37 +246,57 @@ def check_piece_complete(text: str, pieces_found: int = 0) -> tuple[bool, int]:
     """
     Check if the generated text contains a complete piece or multiple pieces.
     
+    A piece is considered complete when:
+    1. There's substantial content (not just metadata/preamble)
+    2. The content ends with a final barline pattern
+    3. OR the model has naturally stopped (BOS+EOS token)
+    
     Returns:
         (is_complete, piece_count): Whether a piece is complete and how many pieces found
     """
+    # Don't consider complete until we have substantial content
+    if len(text) < MIN_CONTENT_FOR_COMPLETION:
+        return False, 0
+    
     lines = text.strip().split('\n')
+    
+    # Must have actual tunebody content (lines with [V: or [r: patterns)
+    has_tunebody = any('[V:' in line or '[r:' in line for line in lines)
+    if not has_tunebody:
+        return False, 0
     
     # Count piece markers (period headers like %Classical, %Romantic, etc.)
     piece_starts = 0
     for line in lines:
         if line.startswith('%') and not line.startswith('%%'):
-            # Check if it's a period marker (first word after % is capitalized)
             content = line[1:].strip()
-            if content and content[0].isupper() and ' ' not in content:
-                # Could be period, composer line, or instrumentation
-                # Period markers are typically single words like Classical, Baroque, Romantic
+            if content and content[0].isupper():
                 if content in ['Classical', 'Baroque', 'Romantic', 'Renaissance', 'Modern', '20th Century', 'Medieval']:
                     piece_starts += 1
     
-    # Check for end markers
-    has_end_marker = False
-    for pattern in END_PATTERNS:
-        if re.search(pattern, text, re.MULTILINE):
-            has_end_marker = True
-            break
+    # Check for definitive end markers - must be at the ACTUAL end of the text
+    # Look at the last few non-empty lines
+    non_empty_lines = [l for l in lines if l.strip()]
+    if not non_empty_lines:
+        return False, 0
     
-    # Check for %end marker explicitly
-    if '%end' in text.lower():
-        has_end_marker = True
+    # Get the last line with actual content
+    last_content_line = non_empty_lines[-1].strip()
     
-    # A piece is complete if we have an end marker and we're past the initial prompt
-    # Count based on how many times we see the typical structure
-    return has_end_marker, max(1, piece_starts)
+    # Check if it ends with a final barline
+    # Final barlines: |] or ||  (but NOT :|] which is just a repeat, need context)
+    has_final_barline = (
+        last_content_line.endswith('|]') or 
+        last_content_line.endswith('||') or
+        last_content_line.endswith(':|]')
+    )
+    
+    # Also check for explicit %end marker at the very end
+    has_end_marker = text.strip().endswith('%end') or text.strip().lower().endswith('%end')
+    
+    is_complete = has_final_barline or has_end_marker
+    
+    return is_complete, max(1, piece_starts)
 
 
 def should_stop_generation(text: str, max_pieces: int = 1) -> bool:

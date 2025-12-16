@@ -38,19 +38,41 @@ Note_list = Note_list + ['z', 'x']
 # End-of-Piece Detection Patterns
 # =============================================================================
 
-END_PATTERNS = [
-    r'\|]\s*$',            # Final bar line
-    r':?\|\]\s*$',         # Repeat + final bar
-    r'\|\|\s*$',           # Double bar line at end
-]
+# Minimum content length before we consider checking for completion
+MIN_CONTENT_FOR_COMPLETION = 500
 
 
 def check_piece_complete(text: str) -> bool:
-    """Check if the generated text contains a complete piece."""
-    for pattern in END_PATTERNS:
-        if re.search(pattern, text, re.MULTILINE):
-            return True
-    return False
+    """
+    Check if the generated text contains a complete piece.
+    Requires substantial content before considering complete.
+    """
+    # Don't consider complete until we have substantial content
+    if len(text) < MIN_CONTENT_FOR_COMPLETION:
+        return False
+    
+    lines = text.strip().split('\n')
+    
+    # Must have actual tunebody content (lines with [V: or [r: patterns)
+    has_tunebody = any('[V:' in line or '[r:' in line for line in lines)
+    if not has_tunebody:
+        return False
+    
+    # Get the last non-empty line
+    non_empty_lines = [l for l in lines if l.strip()]
+    if not non_empty_lines:
+        return False
+    
+    last_content_line = non_empty_lines[-1].strip()
+    
+    # Check if it ends with a final barline
+    has_final_barline = (
+        last_content_line.endswith('|]') or 
+        last_content_line.endswith('||') or
+        last_content_line.endswith(':|]')
+    )
+    
+    return has_final_barline
 
 
 def truncate_to_complete_piece(text: str) -> str:

@@ -1,7 +1,7 @@
-transformers==4.40.0
+transformers
 numpy==1.26.4
-wandb==0.17.2
-abctoolkit==0.0.6
+wandb
+abctoolkit
 # samplings==0.1.7  # Removed - replaced by notagen.sampling for numerical stability
-pyparsing==3.2.1
-gradio==5.17.1
+pyparsing
+gradio==5.50.0
